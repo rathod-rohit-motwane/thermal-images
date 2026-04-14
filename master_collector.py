@@ -17,18 +17,20 @@ from pymodbus.pdu import ModbusPDU
 from pymodbus.framer import FramerType
 from pymodbus.exceptions import ModbusIOException, ModbusException, ConnectionException
 from dotenv import load_dotenv
-import threading,socket
+import threading,socket,yaml
+import coloredlogs,logging,os
 
 
 #TAG for troubleshooting --> where the error orginated.
 tag ="[mod_data_collector.py]"
+
 coloredlogs.install(level='DEBUG', logger=logging.getLogger("mod_data_collector"),fmt='[mod_data_collector] : %(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger("mod_data_collector")
 load_dotenv()
 print(f"{tag} : Started Data Collection Modbus - {datetime.now()}")
 #.env
 pisystem = str(os.environ.get('PI_SYSTEM'))
-reading_intervl=int(os.environ.get('DATA_INTERVAL',60))
+reading_intervl=int(os.environ.get('DATA_INTERVAL',60))  #data interval
 db = str(os.environ.get('DB_NAME'))
 table_name = os.environ.get('RAW_DATA_TABLE')
 
@@ -148,7 +150,9 @@ def packet_logger(sending: bool, packet: bytes) -> bytes:
 def pdu_logger(sending: bool, pdu: ModbusPDU) -> ModbusPDU:
 
     direction = "TX" if sending else "RX"
-    log.debug(f"[PDU {direction}] func={pdu.function_code}")
+
+    hex_pdu = pdu.encode().hex(' ')
+    log.debug(f"[PDU {direction}] Func={pdu.function_code} Data={hex_pdu}")
     return pdu
 
 def connect_logger(connected: bool) -> None:
@@ -258,6 +262,7 @@ def get_mac_address(interface):
     addresses = psutil.net_if_addrs()
     mac_address = addresses[interface][0].address
     return mac_address
+
 #coil status label mapping
 def bool_to_label(value: bool) -> str:
     return "OPERATED" if value else "HEALTHY"
@@ -390,7 +395,8 @@ class ModbusTCPReader:
             #check response
             if response.isError() or not hasattr(response, "registers") or not response.registers:
                 return "\"ER19\""
-
+            
+            log.debug(f"RX BYTES (PDU): {response.encode().hex(' ')}")
             log.debug(f"Raw registers: {response.registers}")
             value = self.decode_registers(response.registers, data_type, endian)
             log.info(f"[Slave ID {slave_id}] Bytes_to_read:{count} Register_address: {address} -→ {value}")
@@ -408,7 +414,7 @@ battery_key='135'
 
 # Main function
 if __name__=="__main__":
-    with open('src/gateway.yml', 'r') as file:
+    with open('gateway.yml', 'r') as file:
         config = yaml.safe_load(file)
 
     conn_raw, cursor_raw = sqlite_fifo.init_db(db, table_name) #creat database
@@ -504,14 +510,14 @@ if __name__=="__main__":
             if sensor_id == 0:
                 temperature,humidity=get_temp_humidity_raspberry1()
 
-                #with SMBus(I2C_BUS) as bus:
-                 #   charge = get_battery_percentage(bus, DEVICE_ADDR, CHARGE_REG)
+                with SMBus(I2C_BUS) as bus:
+                    charge = get_battery_percentage(bus, DEVICE_ADDR, CHARGE_REG)
                 parameter=parameter+"\""+solution_name+temperature_key+"\":"+temperature+","
                 parameter=parameter+"\""+solution_name+humidity_key+"\":"+humidity+","
                 # For Battery percentage
-                #parameter=parameter+"\""+solution_name+battery_key+"\":"+str(charge)+","
-                #footer="end" #footer1
-                footer=f"SensorID:{sensor_id}end"   #footer2
+                parameter=parameter+"\""+solution_name+battery_key+"\":"+str(charge)+","
+                footer="end" #footer1
+               #footer=f"SensorID:{sensor_id}end"   #footer2
                 parameter = parameter.rstrip(",")
                 post_data= header+parameter+","+time_string+footer
                 assert isinstance(post_data, str)
